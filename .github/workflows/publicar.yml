@@ -1,0 +1,66 @@
+name: Publicar Mitre IPTV
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: publicar
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trazer arquivos (primeira vez)
+        run: |
+          N=https://mitreiptv.netlify.app
+          mkdir -p app web
+          [ -f app/MitreIPTV.apk ] || curl -fL --retry 3 -o app/MitreIPTV.apk $N/MitreIPTV.apk
+          [ -f app/versao.txt ] || echo 1.6 > app/versao.txt
+          for f in index.html marca.png favicon.png apple-touch-icon.png icone.png; do
+            [ -f web/$f ] || curl -fL --retry 3 -o web/$f $N/$f
+          done
+          sed -i 's#href="MitreIPTV.apk" download#href="https://github.com/${{ github.repository }}/releases/latest/download/MitreIPTV.apk"#' web/index.html
+          SIZE=$(stat -c%s app/MitreIPTV.apk); echo "APK: $SIZE bytes"
+          [ "$SIZE" -gt 1000000 ] && head -c 2 app/MitreIPTV.apk | grep -q PK || { echo "APK invalido"; exit 1; }
+          git config user.name "Mitre IPTV"
+          git config user.email "actions@users.noreply.github.com"
+          git add app web
+          git diff --cached --quiet || { git commit -m "Arquivos do site e do app"; git push; }
+
+      - name: Publicar versao (Release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(cat app/versao.txt 2>/dev/null | tr -d '[:space:]')
+          [ -z "$VER" ] && VER=1.6
+          if gh release view "v$VER" >/dev/null 2>&1; then
+            gh release upload "v$VER" app/MitreIPTV.apk --clobber
+          else
+            gh release create "v$VER" app/MitreIPTV.apk --title "Mitre IPTV $VER" --notes "Baixe o MitreIPTV.apk e instale no celular Android, TV Box, Fire TV Stick ou Android TV." --latest
+          fi
+
+      - name: Montar o site
+        run: |
+          mkdir -p _site
+          cp -r web/. _site/
+          touch _site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
