@@ -40,6 +40,26 @@ jobs:
           git add app web
           git diff --cached --quiet || { git commit -m "Arquivos do site e do app"; git push; }
 
+      - name: Montar APK com Filmes da Familia
+        run: |
+          if [ -f patch/app.js ] && ! unzip -p app/MitreIPTV.apk assets/www/app.js | cmp -s - patch/app.js; then
+            BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+            echo "build-tools: $BT"
+            cp app/MitreIPTV.apk u.apk
+            zip -q -d u.apk META-INF/MANIFEST.MF 'META-INF/*.SF' 'META-INF/*.RSA'
+            mkdir -p z/assets/www && cp patch/app.js z/assets/www/app.js
+            (cd z && zip -q ../u.apk assets/www/app.js)
+            "$BT/zipalign" -p -f 4 u.apk a.apk
+            keytool -genkeypair -keystore k.jks -storepass mitreiptv -keypass mitreiptv -alias mitre -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Mitre IPTV, O=Mitre Imoveis, C=BR"
+            "$BT/apksigner" sign --ks k.jks --ks-pass pass:mitreiptv --key-pass pass:mitreiptv --out app/MitreIPTV.apk a.apk
+            "$BT/apksigner" verify --print-certs app/MitreIPTV.apk
+            rm -rf z u.apk a.apk k.jks
+            git config user.name "Mitre IPTV"
+            git config user.email "actions@users.noreply.github.com"
+            git add app/MitreIPTV.apk
+            git commit -m "Mitre IPTV $(cat app/versao.txt) - Filmes da Familia" && git push
+          fi
+
       - name: Publicar versao (Release)
         env:
           GH_TOKEN: ${{ github.token }}
