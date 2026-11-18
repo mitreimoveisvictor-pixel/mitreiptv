@@ -3,6 +3,85 @@
 (function () {
   'use strict';
 
+  // ---------- Atualização automática (OTA) ----------
+  // O app baixa a versão nova da interface do GitHub e passa a usá-la na próxima vez que abrir.
+  // Se a versão nova der erro ao abrir, volta sozinho para a versão que veio instalada.
+  var APP_VER = '1.8.0';
+  var OTA_BASE = 'https://mitreimoveisvictor-pixel.github.io/mitreiptv/ota/';
+  function verNum(v) {
+    var p = String(v || '0').split('.'), n = 0;
+    for (var i = 0; i < 3; i++) n = n * 1000 + (parseInt(p[i], 10) || 0);
+    return n;
+  }
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } }
+  function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { } }
+  var OTA_OK = !window.MITRE_KEYMAP;            // Samsung antiga (Orsay): fica na versão do pendrive
+  if (OTA_OK && !window.__OTA_RUN) {
+    var pack = null;
+    try { pack = JSON.parse(lsGet('mp_ota') || 'null'); } catch (e) { }
+    if (pack && verNum(pack.v) > verNum(APP_VER)) {
+      if (lsGet('mp_ota_try') === pack.v && lsGet('mp_ota_ok') !== pack.v) {
+        lsDel('mp_ota');                          // a versão baixada travou na última vez: descarta
+      } else {
+        lsSet('mp_ota_try', pack.v);
+        try {
+          var sheets = document.querySelectorAll('link[rel="stylesheet"], style');
+          for (var si = 0; si < sheets.length; si++) {
+            var sh = sheets[si];
+            if ((sh.href && /style\.css/.test(sh.href)) || (!sh.href && (sh.textContent || '').length > 5000)) sh.disabled = true;
+          }
+          var css = document.createElement('style');
+          css.id = 'ota-css';
+          css.textContent = pack.css;
+          document.getElementsByTagName('head')[0].appendChild(css);
+          document.body.innerHTML = pack.body;
+          window.__OTA_RUN = true;
+          window.__OTA_V = pack.v;
+          window.onerror = function () {                // deu erro ao abrir a versão nova: volta na hora
+            if (lsGet('mp_ota_ok') !== pack.v && lsGet('mp_ota')) { lsDel('mp_ota'); location.reload(); }
+          };
+          var js = document.createElement('script');
+          js.text = pack.js;
+          document.body.appendChild(js);
+          return;                                  // a versão nova assumiu o app
+        } catch (e) { lsDel('mp_ota'); }
+      }
+    }
+  }
+  var CUR_VER = window.__OTA_V || APP_VER;
+  function otaGet(url, ok, fail) {
+    var x = new XMLHttpRequest();
+    try {
+      x.open('GET', url + (url.indexOf('?') < 0 ? '?' : '&') + 't=' + Date.now(), true);
+      x.timeout = 30000;
+      x.onload = function () { if (x.status === 200) ok(x.responseText); else fail(); };
+      x.onerror = fail; x.ontimeout = fail;
+      x.send();
+    } catch (e) { fail(); }
+  }
+  function otaCheck() {
+    if (!OTA_OK) return;
+    otaGet(OTA_BASE + 'ota.json', function (t) {
+      var m = null;
+      try { m = JSON.parse(t); } catch (e) { return; }
+      if (!m || !m.v || verNum(m.v) <= verNum(CUR_VER)) return;
+      var got = {};
+      var files = ['body.html', 'style.css', 'app.js'], keys = ['body', 'css', 'js'];
+      (function next(i) {
+        if (i >= files.length) {
+          got.v = m.v;
+          if (lsSet('mp_ota', JSON.stringify(got))) {
+            lsDel('mp_ota_try');
+            if (typeof toast === 'function') toast('Atualização ' + m.v + ' baixada · feche e abra o app para usar', 7000);
+          }
+          return;
+        }
+        otaGet(OTA_BASE + files[i] + '?v=' + m.v, function (txt) { got[keys[i]] = txt; next(i + 1); }, function () { });
+      })(0);
+    }, function () { });
+  }
+
   var UA_KEYS = {
     LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, ENTER: 13,
     BACK: [27, 461, 10009], // Esc (PC), Voltar LG, Voltar Samsung
@@ -158,6 +237,60 @@
     return x;
   }
 
+
+  // ---------- Servidor automático (lista no GitHub) ----------
+  // O app lê a lista de endereços do painel em servidores.json. Se um endereço cair, tenta o próximo
+  // sozinho; quando o endereço mudar, basta editar o arquivo no GitHub.
+  var SRV_URL = 'https://raw.githubusercontent.com/mitreimoveisvictor-pixel/mitreiptv/main/servidores.json';
+  var SRV_DEFAULT = ['http://frances.lat'];
+  function origin(u) { var m = String(u || '').match(/^https?:\/\/([^\/?#]+)/i); return m ? m[1].toLowerCase() : ''; }
+  function srvList() {
+    var l = null;
+    try { l = JSON.parse(localStorage.getItem('mp_srvs') || 'null'); } catch (e) { }
+    return l && l.length ? l : SRV_DEFAULT;
+  }
+  function fetchSrvList() {
+    var x = new XMLHttpRequest();
+    try {
+      x.open('GET', SRV_URL + '?t=' + Math.floor(Date.now() / 600000), true);
+      x.timeout = 15000;
+      x.onload = function () {
+        if (x.status !== 200) return;
+        try {
+          var o = JSON.parse(x.responseText), l = (o && (o.servidores || o.servers)) || o;
+          if (l && l.length) {
+            var ok = [];
+            for (var i = 0; i < l.length; i++) if (/^https?:\/\/[^\s]+$/i.test(String(l[i]).trim())) ok.push(String(l[i]).trim().replace(/\/+$/, ''));
+            if (ok.length) localStorage.setItem('mp_srvs', JSON.stringify(ok));
+          }
+        } catch (e) { }
+      };
+      x.send();
+    } catch (e) { }
+  }
+  // Troca para o próximo endereço da lista (só se o login atual for de um endereço da lista)
+  var SRV_TRIED = {};
+  function nextServer() {
+    var l = srvList(), cur = origin(S.creds && S.creds.server), inList = false;
+    for (var i = 0; i < l.length; i++) if (origin(l[i]) === cur) inList = true;
+    if (!inList) return null;
+    SRV_TRIED[cur] = 1;
+    for (var j = 0; j < l.length; j++) if (!SRV_TRIED[origin(l[j])]) return l[j];
+    return null;
+  }
+  function switchServer(url) {
+    if (!/player_api\.php/.test(url)) return null;
+    var n = nextServer();
+    if (!n) return null;
+    var oldHost = origin(S.creds.server);
+    S.creds.server = n;
+    if (S.creds.stream && origin(S.creds.stream) === oldHost) S.creds.stream = null;
+    try { if (localStorage.getItem('mp_creds')) saveCreds(S.creds); } catch (e) { }
+    API_HTTPS = (function () { try { return localStorage.getItem('mp_api_http') !== '1'; } catch (e) { return true; } })();
+    toast('Servidor principal fora do ar · usando reserva', 4000);
+    return url.replace(/^https?:\/\/[^\/?#]+/i, (API_HTTPS ? n.replace(/^http:/i, 'https:') : n));
+  }
+
   // Guarda as respostas do servidor por 15 min: abrir de novo uma categoria é instantâneo
   var CACHE = {};
   function getCached(url, ok, fail, progress) {
@@ -165,8 +298,14 @@
     if (c && Date.now() - c.at < 900000) { setTimeout(function () { ok(c.data); }, 0); return null; }
     return getJSON(url, function (d) { CACHE[url] = { at: Date.now(), data: d }; ok(d); }, function (err) {
       var alt = httpsFailed(url);           // HTTPS não funcionou neste servidor: volta para HTTP
-      if (alt) { S.req = getJSON(alt, function (d) { CACHE[url] = { at: Date.now(), data: d }; ok(d); }, fail, progress); return; }
-      fail(err);
+      var done = function (d) { CACHE[url] = { at: Date.now(), data: d }; ok(d); };
+      var tryNext = function (e2, u2) {
+        var nu = switchServer(u2);              // endereço fora do ar: tenta o próximo da lista
+        if (nu) { S.req = getJSON(nu, done, function (e3) { tryNext(e3, nu); }, progress); return; }
+        fail(e2);
+      };
+      if (alt) { S.req = getJSON(alt, done, function (e2) { tryNext(e2, alt); }, progress); return; }
+      tryNext(err, url);
     }, progress);
   }
   // Na tela inicial, já baixa as listas de categorias (são pequenas)
@@ -347,7 +486,9 @@
 
   // ---------- Login ----------
   function doLogin() {
-    var c = parseInput($('lServer').value, $('lUser').value, $('lPass').value);
+    var sv = $('lServer').value.trim();
+    if (!sv && $('lUser').value.trim() && $('lPass').value.trim()) sv = srvList()[0];   // servidor vazio: usa o da lista
+    var c = parseInput(sv, $('lUser').value, $('lPass').value);
     var st = $('lStatus');
     st.className = 'status err';
     if (!c) { st.textContent = 'Preencha servidor, usuário e senha (ou cole o link da Lista M3U no primeiro campo).'; return; }
@@ -1483,6 +1624,125 @@
     } catch (e) { }
   }
 
+  // ---------- Teclado na tela (controle remoto) ----------
+  // Abre quando o campo é ativado pelo OK do controle. Funciona em TV Box, LG, Samsung e notebook.
+  var OSK = null;
+  var OSK_ROWS = [
+    ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+    ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
+    ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', '⌫'],
+    ['⇧', 'z', 'x', 'c', 'v', 'b', 'n', 'm', '.', '/'],
+    ['http://', ':', '-', '_', '@', '?', '=', '&', '.com'],
+    ['Espaço', 'Limpar', 'Concluir ✓']
+  ];
+  var OSK_NEXT = { lServer: 'lUser', lUser: 'lPass', lPass: 'lBtn' };
+  function oskBuild() {
+    var d = document.createElement('div');
+    d.id = 'osk';
+    var h = '<div class="osk-top"><span id="oskLbl"></span><div id="oskVal"></div></div>';
+    for (var r = 0; r < OSK_ROWS.length; r++) {
+      h += '<div class="osk-row">';
+      for (var c = 0; c < OSK_ROWS[r].length; c++) {
+        var key = OSK_ROWS[r][c];
+        var w = key.length > 2 ? ' wide' : '';
+        if (key === 'Concluir ✓') w += ' ok';
+        h += '<div class="osk-k' + w + '" data-r="' + r + '" data-c="' + c + '">' + key + '</div>';
+      }
+      h += '</div>';
+    }
+    h += '<div class="osk-tip">Setas: mover · OK: digitar · Voltar: fechar · números do controle também digitam</div>';
+    d.innerHTML = h;
+    document.body.appendChild(d);
+    d.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    d.addEventListener('click', function (e) {
+      var t = e.target;
+      if (!t.getAttribute || t.getAttribute('data-r') === null) return;
+      OSK.r = +t.getAttribute('data-r'); OSK.c = +t.getAttribute('data-c');
+      oskPress();
+    });
+    return d;
+  }
+  function oskKeyEl(r, c) { return document.querySelector('#osk .osk-k[data-r="' + r + '"][data-c="' + c + '"]'); }
+  function oskPaint() {
+    var all = document.querySelectorAll('#osk .osk-k');
+    for (var i = 0; i < all.length; i++) {
+      var r = +all[i].getAttribute('data-r'), c = +all[i].getAttribute('data-c');
+      var key = OSK_ROWS[r][c];
+      if (key.length === 1 && /[a-z]/.test(key)) all[i].textContent = OSK.up ? key.toUpperCase() : key;
+      all[i].className = all[i].className.replace(/\s?sel\b/g, '') + (r === OSK.r && c === OSK.c ? ' sel' : '');
+      if (key === '⇧') all[i].className = all[i].className.replace(/\s?on\b/g, '') + (OSK.up ? ' on' : '');
+    }
+    var inp = OSK.inp, v = inp.value;
+    var masked = inp.type === 'password' ? v.replace(/./g, '•') : v;
+    $('oskVal').textContent = masked + '▏';
+    var lb = document.querySelector('label[for="' + inp.id + '"]');
+    $('oskLbl').textContent = lb ? lb.textContent : (inp.placeholder || 'Digite');
+  }
+  function oskOpen(inp) {
+    if (!$('osk')) oskBuild();
+    OSK = { inp: inp, r: 1, c: 0, up: false };
+    $('osk').className = 'show';
+    try { inp.blur(); } catch (e) { }
+    oskPaint();
+  }
+  function oskClose(next) {
+    if (!OSK) return;
+    var inp = OSK.inp;
+    OSK = null;
+    $('osk').className = '';
+    try { inp.dispatchEvent(new Event('input')); } catch (e) { }
+    var n = next && OSK_NEXT[inp.id] ? $(OSK_NEXT[inp.id]) : inp;
+    setFocus(n);
+  }
+  function oskType(ch) {
+    var inp = OSK.inp;
+    inp.value = inp.value + ch;
+    try { inp.dispatchEvent(new Event('input')); } catch (e) { }
+    oskPaint();
+  }
+  function oskPress() {
+    var key = OSK_ROWS[OSK.r][OSK.c], inp = OSK.inp;
+    if (key === '⌫') { inp.value = inp.value.slice(0, -1); oskPaint(); }
+    else if (key === '⇧') { OSK.up = !OSK.up; oskPaint(); }
+    else if (key === 'Espaço') oskType(' ');
+    else if (key === 'Limpar') { inp.value = ''; oskPaint(); }
+    else if (key === 'Concluir ✓') oskClose(true);
+    else oskType(key.length === 1 && OSK.up ? key.toUpperCase() : key);
+  }
+  function oskMove(dr, dc) {
+    if (dc) {
+      var n = OSK_ROWS[OSK.r].length;
+      OSK.c = (OSK.c + dc + n) % n;
+    } else {
+      var from = oskKeyEl(OSK.r, OSK.c).getBoundingClientRect();
+      var x = from.left + from.width / 2;
+      var nr = OSK.r + dr;
+      if (nr < 0 || nr >= OSK_ROWS.length) return;
+      var best = 0, bd = 1e9;
+      for (var c = 0; c < OSK_ROWS[nr].length; c++) {
+        var b = oskKeyEl(nr, c).getBoundingClientRect();
+        var dd = Math.abs(b.left + b.width / 2 - x);
+        if (dd < bd) { bd = dd; best = c; }
+      }
+      OSK.r = nr; OSK.c = best;
+    }
+    oskPaint();
+  }
+  function oskKey(e, k) {
+    if (k === UA_KEYS.LEFT) oskMove(0, -1);
+    else if (k === UA_KEYS.RIGHT) oskMove(0, 1);
+    else if (k === UA_KEYS.UP) oskMove(-1, 0);
+    else if (k === UA_KEYS.DOWN) oskMove(1, 0);
+    else if (k === UA_KEYS.ENTER) oskPress();
+    else if (has(UA_KEYS.BACK, k)) oskClose(false);
+    else if (k === 8) { OSK.inp.value = OSK.inp.value.slice(0, -1); oskPaint(); }
+    else if (k >= 48 && k <= 57 && !e.shiftKey) oskType(String(k - 48));
+    else if (k >= 96 && k <= 105) oskType(String(k - 96));
+    else if (e.key && e.key.length === 1) oskType(e.key);   // teclado físico (notebook)
+    else return;
+    e.preventDefault();
+  }
+
   // ---------- Teclas ----------
   document.addEventListener('keydown', function (e) {
     var k = e.keyCode;
@@ -1492,6 +1752,7 @@
       e.preventDefault();
       return;
     }
+    if (OSK) { oskKey(e, k); return; }
     if (S.screen === 'player') { playerKey(k); e.preventDefault(); return; }
 
     var ae = document.activeElement;
@@ -1517,10 +1778,8 @@
       if (cur && /\bcard\b/.test(cur.className) && !(S.kind === 'live' && S.showHidden)) {
         okDown(cur);
       } else if (cur) {
-        if (cur.tagName === 'INPUT') {
-          cur.focus();
-          if (NATIVE && NATIVE.showKeyboard) { try { NATIVE.showKeyboard(); } catch (e2) { } }
-        } else cur.click();
+        if (cur.tagName === 'INPUT') oskOpen(cur);   // controle remoto: teclado na tela
+        else cur.click();
       }
       e.preventDefault();
     } else if (has(UA_KEYS.FAV, k)) {
@@ -1600,6 +1859,10 @@
   S.hidden = loadHidden();
   S.fav = loadFav();
   S.creds = loadCreds();
+  fetchSrvList();
+  lsSet('mp_ota_ok', CUR_VER);               // abriu sem erro: esta versão é confiável
+  window.onerror = null;
+  setTimeout(otaCheck, 8000);
   if (S.creds) {
     openHome();
   } else {
