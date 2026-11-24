@@ -6,7 +6,7 @@
   // ---------- Atualização automática (OTA) ----------
   // O app baixa a versão nova da interface do GitHub e passa a usá-la na próxima vez que abrir.
   // Se a versão nova der erro ao abrir, volta sozinho para a versão que veio instalada.
-  var APP_VER = '1.8.0';
+  var APP_VER = '1.8.1';
   var OTA_BASE = 'https://mitreimoveisvictor-pixel.github.io/mitreiptv/ota/';
   function verNum(v) {
     var p = String(v || '0').split('.'), n = 0;
@@ -237,6 +237,28 @@
     return x;
   }
 
+
+  // ---------- LG: mantém o Modo Desenvolvedor ativo para sempre ----------
+  // O instalador grava na pasta do app o token da TV (devtoken.txt). Toda vez que o app abre
+  // (no máximo 1 vez por dia), ele renova a sessão no site da LG, que volta para 1000 horas.
+  function lgKeepAlive() {
+    var ua = navigator.userAgent || '';
+    if (!window.PalmSystem && ua.indexOf('Web0S') < 0 && ua.indexOf('webOS') < 0) return;
+    var last = +(lsGet('mp_lgext') || 0);
+    if (Date.now() - last < 20 * 3600 * 1000) return;
+    var x = new XMLHttpRequest();
+    try {
+      x.open('GET', 'devtoken.txt?t=' + Date.now(), true);
+      x.onload = function () {
+        var tk = String(x.responseText || '').replace(/\s+/g, '');
+        if (!tk || tk.length < 8 || /[<>"' ]/.test(tk)) return;
+        var img = new Image();
+        img.src = 'https://developer.lge.com/secure/ResetDevModeSession.dev?sessionToken=' + encodeURIComponent(tk) + '&t=' + Date.now();
+        lsSet('mp_lgext', String(Date.now()));
+      };
+      x.send();
+    } catch (e) { }
+  }
 
   // ---------- Servidor automático (lista no GitHub) ----------
   // O app lê a lista de endereços do painel em servidores.json. Se um endereço cair, tenta o próximo
@@ -1863,6 +1885,7 @@
   lsSet('mp_ota_ok', CUR_VER);               // abriu sem erro: esta versão é confiável
   window.onerror = null;
   setTimeout(otaCheck, 8000);
+  setTimeout(lgKeepAlive, 5000);
   if (S.creds) {
     openHome();
   } else {
